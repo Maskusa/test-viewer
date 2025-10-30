@@ -32,20 +32,22 @@ interface PageContent {
   initialYOffset: number;
   debugLines: LineDebugInfo[];
   stats: PageStatsInfo;
-  clipHeight?: number; 
 }
 
-const PageStats: React.FC<{ stats: PageStatsInfo }> = ({ stats }) => (
-    <div className="bg-gray-900/50 border border-gray-700 rounded-lg text-white text-xs p-2 font-mono grid grid-cols-2 gap-x-4 gap-y-1">
-      <div className="flex justify-between"><span>Total:</span><span>{stats.totalLines}</span></div>
-      <div className="flex justify-between text-green-400"><span>Good:</span><span>{stats.goodLines}</span></div>
-      <div className="flex justify-between text-red-400"><span>Bad:</span><span>{stats.badLines}</span></div>
-      <div className="flex justify-between text-gray-400"><span>Empty:</span><span>{stats.emptyLines}</span></div>
-      <div className="col-span-2 border-t border-gray-700 pt-1 mt-1"></div>
-      <div className="flex justify-between"><span>Viewer H:</span><span>{stats.viewerHeight.toFixed(0)}px</span></div>
-      <div className="flex justify-between"><span>Content H:</span><span id="content_h">{stats.contentHeight.toFixed(0)}px</span></div>
-    </div>
-);
+const PageStats: React.FC<{ stats: PageStatsInfo }> = ({ stats }) => {
+    console.log('[PageStats] Rendering with stats:', stats);
+    return (
+        <div className="bg-gray-900/50 border border-gray-700 rounded-lg text-white text-xs p-2 font-mono grid grid-cols-2 gap-x-4 gap-y-1">
+        <div className="flex justify-between"><span>Total:</span><span>{stats.totalLines}</span></div>
+        <div className="flex justify-between text-green-400"><span>Good:</span><span>{stats.goodLines}</span></div>
+        <div className="flex justify-between text-red-400"><span>Bad:</span><span>{stats.badLines}</span></div>
+        <div className="flex justify-between text-gray-400"><span>Empty:</span><span>{stats.emptyLines}</span></div>
+        <div className="col-span-2 border-t border-gray-700 pt-1 mt-1"></div>
+        <div className="flex justify-between"><span>Viewer H:</span><span>{stats.viewerHeight.toFixed(0)}px</span></div>
+        <div className="flex justify-between"><span>Content H:</span><span id="content_h">{stats.contentHeight.toFixed(0)}px</span></div>
+        </div>
+    );
+};
 
 const Page: React.FC<{
   content: PageContent;
@@ -53,8 +55,9 @@ const Page: React.FC<{
   fontSize: number;
   pageIndex: number;
 }> = React.memo(({ content, showDebugView, fontSize, pageIndex }) => {
+  console.log(`[Page Component] Rendering page ${pageIndex} with viewerHeight: ${content.stats.viewerHeight}px`);
   return (
-    <div id={`viewer_h-${pageIndex}`} className="relative w-full h-full" style={{ height: content.clipHeight ? `${content.clipHeight}px` : '100%', overflow: 'hidden' }}>
+    <div id={`viewer_h-${pageIndex}`} className="relative w-full" style={{ height: `${content.stats.viewerHeight}px`, overflow: 'hidden' }}>
         <div style={{ transform: `translateY(-${content.initialYOffset}px)` }}>
             <div
                 id={`content_h-${pageIndex}`}
@@ -101,7 +104,11 @@ export const BookView: React.FC = () => {
   }, []);
 
   useLayoutEffect(() => {
-    if (!measureRef.current || sourceElements.length === 0) return;
+    console.log(`%c[Layout Start] W:${blockWidth} H:${blockHeight} Font:${fontSize}`, 'color: #00FFFF; font-weight: bold;');
+    if (!measureRef.current || sourceElements.length === 0) {
+      console.warn('[Layout Abort] No measure ref or source elements.');
+      return;
+    }
     
     const pageContentContainer = measureRef.current;
     
@@ -116,14 +123,13 @@ export const BookView: React.FC = () => {
     
     pageContentContainer.innerHTML = '';
 
-    // Create a temporary element to measure the true available height
     const tempPageViewer = document.createElement('div');
     tempPageViewer.style.position = 'absolute';
     tempPageViewer.style.visibility = 'hidden';
     tempPageViewer.style.pointerEvents = 'none';
     tempPageViewer.style.height = `${blockHeight}px`;
     tempPageViewer.style.padding = `${remToPx(PADDING_Y_REM)}px ${remToPx(PADDING_X_REM)}px`;
-    tempPageViewer.style.boxSizing = 'border-box'; // Ensure consistent box model
+    tempPageViewer.style.boxSizing = 'border-box';
     document.body.appendChild(tempPageViewer);
 
     const tempInnerViewer = document.createElement('div');
@@ -135,44 +141,62 @@ export const BookView: React.FC = () => {
     document.body.removeChild(tempPageViewer);
     
     if (availableTextHeight <= 0) {
+      console.error('[Layout Abort] availableTextHeight is 0 or less.');
       setPages([]);
       return;
     };
+    console.log(`[Layout Calc] Available Text Height: ${availableTextHeight.toFixed(2)}px`);
 
     const newPages: PageContent[] = [];
     let elementIndex = 0;
     let yOffsetForNextPage = 0;
 
     while (elementIndex < sourceElements.length) {
+        console.group(`%c[Page ${newPages.length + 1}]`, 'color: #00FF00; font-weight: bold;');
+        
         const initialYOffset = yOffsetForNextPage;
         pageContentContainer.innerHTML = '';
         
-        let pageElementsCount = 0;
-        let lastMeasuredHeight = 0;
+        let pageElements: (Node | HTMLElement)[];
+        let lastMeasuredHeight: number;
+        let advanceBy: number;
+        let yOffsetOnNextPage = 0;
 
-        for (let i = elementIndex; i < sourceElements.length; i++) {
-            pageContentContainer.appendChild(sourceElements[i].cloneNode(true));
+        if (initialYOffset > 0) {
+            console.log(`-> Resuming split element at index ${elementIndex} with offset ${initialYOffset.toFixed(2)}px`);
+            const elementToContinue = sourceElements[elementIndex].cloneNode(true);
+            pageContentContainer.appendChild(elementToContinue);
+            pageElements = [elementToContinue];
             lastMeasuredHeight = pageContentContainer.getBoundingClientRect().height;
-            pageElementsCount = (i - elementIndex) + 1;
-            if ((lastMeasuredHeight - initialYOffset) > availableTextHeight) {
-                break;
+            advanceBy = 1;
+            yOffsetOnNextPage = 0; // Next page starts fresh
+            console.log(`Added 1 resumed element. Measured height: ${lastMeasuredHeight.toFixed(2)}px`);
+        } else {
+            console.log(`-> Starting fresh page with elementIndex: ${elementIndex}`);
+            let pageElementsCount = 0;
+            for (let i = elementIndex; i < sourceElements.length; i++) {
+                pageContentContainer.appendChild(sourceElements[i].cloneNode(true));
+                lastMeasuredHeight = pageContentContainer.getBoundingClientRect().height;
+                pageElementsCount = (i - elementIndex) + 1;
+                if (lastMeasuredHeight > availableTextHeight) {
+                    break;
+                }
             }
+            console.log(`Added ${pageElementsCount} elements. Measured height: ${lastMeasuredHeight.toFixed(2)}px`);
+            pageElements = sourceElements.slice(elementIndex, elementIndex + pageElementsCount);
+            advanceBy = pageElementsCount;
         }
         
-        const pageElements = sourceElements.slice(elementIndex, elementIndex + pageElementsCount);
-        let pageHTML = pageElements.map(e => e.outerHTML).join('');
-
-        let finalPageHTML = pageHTML;
+        let finalPageHTML = pageElements.map(e => (e as HTMLElement).outerHTML).join('');
         let finalDebugLines: LineDebugInfo[] = [];
         let finalClipHeight: number | undefined = undefined;
         let displayedContentHeight = lastMeasuredHeight - initialYOffset;
-        const totalContentHeightForPage = displayedContentHeight;
-        let yOffsetOnNextPage = 0;
-        let advanceBy = pageElementsCount;
         
         const isSplit = (lastMeasuredHeight - initialYOffset) > availableTextHeight + 1;
+        console.log(`Page isSplit: ${isSplit}`);
 
         if (isSplit) {
+            console.log('-> Splitting page content');
             const pageContainerRect = pageContentContainer.getBoundingClientRect();
             const allLines: LineDebugInfo[] = [];
              Array.from(pageContentContainer.children).forEach((el: Element) => {
@@ -182,90 +206,135 @@ export const BookView: React.FC = () => {
                 rects.forEach(lineRect => {
                     const lineTopInPage = (lineRect.top - pageContainerRect.top) - initialYOffset;
                      if (lineRect.width < 1 || lineRect.height < 1) return;
-                    allLines.push({
-                        top: lineTopInPage, left: lineRect.left - pageContainerRect.left,
-                        width: lineRect.width, height: lineRect.height, isBad: false, // will determine badness later
-                    });
+                    allLines.push({ top: lineTopInPage, left: lineRect.left - pageContainerRect.left, width: lineRect.width, height: lineRect.height, isBad: false });
                 });
             });
 
             const goodLines = allLines.filter(l => (l.top + l.height) <= availableTextHeight + 1);
+            console.log(`Found ${allLines.length} total lines, ${goodLines.length} good lines.`);
 
             if (goodLines.length > 0) {
                 const lastGoodLine = goodLines[goodLines.length - 1];
                 finalClipHeight = lastGoodLine.top + lastGoodLine.height;
-                displayedContentHeight = finalClipHeight;
                 finalDebugLines = goodLines;
                 yOffsetOnNextPage = initialYOffset + finalClipHeight;
+                console.log(`Calculated clipHeight: ${finalClipHeight.toFixed(2)}px`);
                 
-                const lastElementOnPage = pageElements[pageElements.length - 1];
-                 const canSplitLastElement = lastElementOnPage && !lastElementOnPage.tagName.startsWith('H');
+                const lastElementOnPage = pageElements[pageElements.length - 1] as HTMLElement;
+                const canSplitLastElement = lastElementOnPage && !lastElementOnPage.tagName.startsWith('H');
+                console.log(`Last element (${lastElementOnPage?.tagName}) can be split: ${canSplitLastElement}`);
                 
                 if(canSplitLastElement){
-                    advanceBy -= 1; 
+                    advanceBy -= 1;
+                    console.log(`-> Will split last element. New advanceBy: ${advanceBy}`);
                 } else {
-                    finalPageHTML = pageElements.slice(0, -1).map(e => e.outerHTML).join('');
+                    finalPageHTML = (pageElements.slice(0, -1) as HTMLElement[]).map(e => e.outerHTML).join('');
+                    const remainingGoodLines = goodLines.slice(0, goodLines.findIndex(l => l.top >= (lastElementOnPage as any).offsetTop - initialYOffset));
+                    if (remainingGoodLines.length > 0) {
+                        const newLastGoodLine = remainingGoodLines[remainingGoodLines.length - 1];
+                        finalClipHeight = newLastGoodLine.top + newLastGoodLine.height;
+                        finalDebugLines = remainingGoodLines;
+                    } else {
+                        finalClipHeight = 0; // Page becomes empty
+                        finalDebugLines = [];
+                    }
                     yOffsetOnNextPage = 0;
+                    advanceBy -= 1;
+                    console.log(`-> Last element cannot be split. Removing it. New advanceBy: ${advanceBy}. Next page offset reset to 0. Recalculated clipHeight: ${finalClipHeight.toFixed(2)}px`);
                 }
             } else {
-                 finalPageHTML = '';
-                 finalDebugLines = [];
-                 displayedContentHeight = 0;
-                 yOffsetOnNextPage = 0; 
-                 advanceBy = Math.max(0, pageElementsCount - 1);
+                 console.warn('-> No good lines fit on this page. Skipping page creation and moving element(s) to the next.');
+                 yOffsetForNextPage = 0;
+                 elementIndex += pageElements.length > 0 ? pageElements.length : 1;
+                 console.groupEnd();
+                 continue;
             }
         } else {
+            console.log('-> Page content fits completely.');
             const pageContainerRect = pageContentContainer.getBoundingClientRect();
+            const allLines: LineDebugInfo[] = [];
              Array.from(pageContentContainer.children).forEach((el: Element) => {
                 const range = document.createRange();
                 range.selectNodeContents(el);
                 const rects = Array.from(range.getClientRects());
                 rects.forEach(lineRect => {
-                    finalDebugLines.push({
+                    if (lineRect.width < 1 || lineRect.height < 1) return;
+                    allLines.push({
                         top: (lineRect.top - pageContainerRect.top) - initialYOffset,
                         left: lineRect.left - pageContainerRect.left,
                         width: lineRect.width, height: lineRect.height, isBad: false
                     });
                 });
             });
+            finalDebugLines = allLines.filter(l => (l.top + l.height) > 0.1 && l.top < availableTextHeight);
+            console.log(`-> Content fits. Found ${allLines.length} total lines in content, filtered to ${finalDebugLines.length} visible lines.`);
         }
         
         const goodLinesCount = finalDebugLines.length;
-        const totalLinesCount = Math.max(0, Math.floor(availableTextHeight / avgLineHeight));
+        
+        if(goodLinesCount === 0 && newPages.length > 0){
+             console.warn('-> No visible lines calculated. This would create an empty page. Skipping.');
+             yOffsetForNextPage = 0;
+             elementIndex += advanceBy;
+             console.groupEnd();
+             continue;
+        }
 
         if(finalPageHTML.trim() !== '' || newPages.length === 0) {
-             newPages.push({
+            const viewerHeightForStats = finalClipHeight !== undefined ? finalClipHeight : displayedContentHeight;
+            
+            let totalLinesForStats = Math.max(0, Math.floor(viewerHeightForStats / avgLineHeight));
+            
+            console.log(`-> Calculating Total Lines: floor(${viewerHeightForStats.toFixed(2)} / ${avgLineHeight.toFixed(2)}) = ${totalLinesForStats}`);
+            
+            // FIX: The average calculation can be wrong. If we measured more good lines than the total, adjust the total.
+            if (goodLinesCount > totalLinesForStats) {
+                console.warn(`-> Adjusting totalLines (${totalLinesForStats}) to match goodLines (${goodLinesCount}) because average calculation was inaccurate.`);
+                totalLinesForStats = goodLinesCount;
+            }
+
+            const statsForPage: PageStatsInfo = {
+                totalLines: totalLinesForStats,
+                goodLines: goodLinesCount, badLines: 0,
+                emptyLines: Math.max(0, totalLinesForStats - goodLinesCount),
+                viewerHeight: viewerHeightForStats,
+                contentHeight: lastMeasuredHeight,
+            };
+
+            console.log('-> Preparing stats for push:', {
+                isSplit,
+                finalClipHeight,
+                displayedContentHeight,
+                totalContentHeightForPage: lastMeasuredHeight,
+                calculatedStats: statsForPage
+            });
+             
+             const pageToPush: PageContent = {
                 html: finalPageHTML,
                 initialYOffset: initialYOffset,
                 debugLines: finalDebugLines,
-                clipHeight: finalClipHeight,
-                stats: {
-                    totalLines: totalLinesCount,
-                    goodLines: goodLinesCount, badLines: 0, // Bad lines are no longer rendered
-                    emptyLines: Math.max(0, totalLinesCount - goodLinesCount),
-                    viewerHeight: finalClipHeight !== undefined ? finalClipHeight : availableTextHeight,
-                    contentHeight: totalContentHeightForPage,
-                }
-            });
+                stats: statsForPage,
+            };
+            console.log('Pushing new page object:');
+            console.dir(pageToPush);
+            newPages.push(pageToPush);
+        } else {
+            console.warn('Skipping empty page creation.');
         }
         
         yOffsetForNextPage = yOffsetOnNextPage;
         elementIndex += advanceBy;
-         if (elementIndex === sourceElements.length && yOffsetForNextPage > 0) {
-            // Handle dangling yOffset from a split on the very last element
-            elementIndex--;
-        }
-
-        if (advanceBy === 0 && isSplit) {
-            elementIndex++;
-        }
+        
+        console.log(`Ending loop with elementIndex: ${elementIndex}, next page yOffset: ${yOffsetForNextPage.toFixed(2)}`);
+        console.groupEnd();
     }
 
+    console.log(`%c[Layout End] Created ${newPages.length} pages.`, 'color: #00FFFF; font-weight: bold;');
     setPages(newPages);
     if (currentPage >= newPages.length) {
       setCurrentPage(Math.max(0, newPages.length > 0 ? newPages.length - (newPages.length % 4 || 4) : 0));
     }
-  }, [blockWidth, blockHeight, fontSize, sourceElements, currentPage]); // Added currentPage to deps to re-evaluate if needed
+  }, [blockWidth, blockHeight, fontSize, sourceElements, currentPage]);
 
   const handleTurnPage = (direction: 'next' | 'prev') => {
     setCurrentPage(p => direction === 'next' ? Math.min(p + 4, pages.length - (pages.length % 4 || 4)) : Math.max(0, p - 4));
@@ -276,6 +345,10 @@ export const BookView: React.FC = () => {
 
   const renderPage = (pageIndex: number) => {
     const pageContent = pages[pageIndex];
+     if(pageContent) {
+        console.log(`[Render] Rendering pageIndex ${pageIndex}.`);
+        console.dir(pageContent);
+     }
     return (
         <div className="flex flex-col gap-4" style={{ width: blockWidth }}>
              {showDebugView && pageContent ? <PageStats stats={pageContent.stats} /> : <div className="h-[70px]" />}
