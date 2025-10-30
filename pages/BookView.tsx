@@ -43,7 +43,7 @@ const PageStats: React.FC<{ stats: PageStatsInfo }> = ({ stats }) => (
       <div className="flex justify-between text-gray-400"><span>Empty:</span><span>{stats.emptyLines}</span></div>
       <div className="col-span-2 border-t border-gray-700 pt-1 mt-1"></div>
       <div className="flex justify-between"><span>Viewer H:</span><span>{stats.viewerHeight.toFixed(0)}px</span></div>
-      <div className="flex justify-between"><span>Content H:</span><span>{stats.contentHeight.toFixed(0)}px</span></div>
+      <div className="flex justify-between"><span>Content H:</span><span id="content_h">{stats.contentHeight.toFixed(0)}px</span></div>
     </div>
 );
 
@@ -116,8 +116,24 @@ export const BookView: React.FC = () => {
     
     pageContentContainer.innerHTML = '';
 
-    const PADDING_PX_Y = remToPx(PADDING_Y_REM);
-    const availableTextHeight = blockHeight - PADDING_PX_Y * 2;
+    // Create a temporary element to measure the true available height
+    const tempPageViewer = document.createElement('div');
+    tempPageViewer.style.position = 'absolute';
+    tempPageViewer.style.visibility = 'hidden';
+    tempPageViewer.style.pointerEvents = 'none';
+    tempPageViewer.style.height = `${blockHeight}px`;
+    tempPageViewer.style.padding = `${remToPx(PADDING_Y_REM)}px ${remToPx(PADDING_X_REM)}px`;
+    tempPageViewer.style.boxSizing = 'border-box'; // Ensure consistent box model
+    document.body.appendChild(tempPageViewer);
+
+    const tempInnerViewer = document.createElement('div');
+    tempInnerViewer.style.height = '100%';
+    tempPageViewer.appendChild(tempInnerViewer);
+
+    const availableTextHeight = tempInnerViewer.offsetHeight;
+    
+    document.body.removeChild(tempPageViewer);
+    
     if (availableTextHeight <= 0) {
       setPages([]);
       return;
@@ -227,7 +243,7 @@ export const BookView: React.FC = () => {
                     totalLines: totalLinesCount,
                     goodLines: goodLinesCount, badLines: 0, // Bad lines are no longer rendered
                     emptyLines: Math.max(0, totalLinesCount - goodLinesCount),
-                    viewerHeight: availableTextHeight,
+                    viewerHeight: finalClipHeight !== undefined ? finalClipHeight : availableTextHeight,
                     contentHeight: totalContentHeightForPage,
                 }
             });
