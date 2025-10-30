@@ -1,4 +1,4 @@
-import React, { useState, useRef, useLayoutEffect, useMemo } from 'react';
+import React, { useState, useRef, useLayoutEffect, useMemo, useEffect } from 'react';
 import { Controls } from '../components/Controls';
 import { TEXT_CONTENT } from '../constants';
 
@@ -10,6 +10,25 @@ const remToPx = (rem: number) => {
   return rem * parseFloat(getComputedStyle(document.documentElement).fontSize);
 };
 
+// --- Debug helpers ---
+const DEBUG_STRICT = true;          // можно подвязать на UI‑переключатель
+const EPS = 1;                      // допуск по пикселям
+const RUN_ID = Math.floor(Math.random() * 1e9);
+
+const fmtPx = (n?: number) => n === undefined ? '—' : `${n.toFixed(2)}px`;
+const elLabel = (el: Element) => {
+  const t = (el as HTMLElement).tagName;
+  const len = ((el.textContent || '').trim()).length;
+  const cls = (el as HTMLElement).className?.split(/\s+/).filter(Boolean).slice(0,2).join('.') || '';
+  return `${t}${cls ? '.'+cls : ''}[${len}ch]`;
+};
+const hash32 = (s: string) => { // небольшой хэш для быстрых сравнений
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+  return h.toString(16);
+};
+
+
 interface LineDebugInfo {
   top: number;
   left: number;
@@ -19,13 +38,24 @@ interface LineDebugInfo {
 }
 
 interface PageStatsInfo {
-    totalLines: number;
-    goodLines: number;
-    badLines: number;
-    emptyLines: number;
-    viewerHeight: number;
-    contentHeight: number;
+  totalLines: number;
+  goodLines: number;
+  badLines: number;
+  emptyLines: number;
+  viewerHeight: number;     // фактически отрисованная видимая часть (по расчёту)
+  contentHeight: number;    // полная высота контента на странице до клипа
+  // ДОБАВЛЕНО:
+  availableHeight: number;  // доступная высота внутри viewer (без паддингов)
+  overshootPx: number;      // сколько "налезли" сверх видимой области до клипа
+  underfillPx: number;      // сколько не добрали до низа (подозрение на недозаполнение)
+  pageNo: number;           // номер страницы (для удобства в логе)
+  handoffNextOffset: number;// offset, который передали на след. страницу
+  elementIndexStart: number;// индекс первого элемента, попавшего в страницу
+  elementIndexEnd: number;  // индекс последнего элемента, попавшего в страницу (после отбрасывания хвоста)
+  lastElement: string | null; // человекочитаемая метка последнего узла
+  splitLast: boolean;       // резали ли последний узел на этой странице
 }
+
 
 interface PageContent {
   html: string;
@@ -56,6 +86,30 @@ const Page: React.FC<{
   pageIndex: number;
 }> = React.memo(({ content, showDebugView, fontSize, pageIndex }) => {
   console.log(`[Page Component] Rendering page ${pageIndex} with viewerHeight: ${content.stats.viewerHeight}px`);
+
+  useEffect(() => {
+    const viewer = document.getElementById(`viewer_h-${pageIndex}`);
+    const contentEl = document.getElementById(`content_h-${pageIndex}`);
+    if (!viewer || !contentEl) return;
+  
+    const vh = (viewer as HTMLElement).getBoundingClientRect().height;
+    const ch = (contentEl as HTMLElement).getBoundingClientRect().height;
+  
+    // 1) главный инвариант — viewer < content
+    const okViewerVsContent = vh < ch - EPS;
+  
+    // 2) сверка «ожидаемой» и фактической высоты viewer
+    const deltaStatsVsDom = Math.abs(vh - content.stats.viewerHeight);
+  
+    const note = `[Post-Render Invariant] run#${RUN_ID} page ${pageIndex + 1}: viewer=${fmtPx(vh)} content=${fmtPx(ch)} ` +
+                 `expectedViewer=${fmtPx(content.stats.viewerHeight)} Δ=${fmtPx(deltaStatsVsDom)} OK=${okViewerVsContent}`;
+    if (!okViewerVsContent) {
+      console.error(note, { pageIndex, dom: { viewer: vh, content: ch }, stats: content.stats });
+    } else if (DEBUG_STRICT) {
+      console.log(note);
+    }
+  }, [content.html, content.stats, pageIndex]);
+
   return (
     <div id={`viewer_h-${pageIndex}`} className="relative w-full" style={{ height: `${content.stats.viewerHeight}px`, overflow: 'hidden' }}>
         <div style={{ transform: `translateY(-${content.initialYOffset}px)` }}>
@@ -147,11 +201,20 @@ export const BookView: React.FC = () => {
     };
     console.log(`[Layout Calc] Available Text Height: ${availableTextHeight.toFixed(2)}px`);
 
+    console.log('[Metrics]', {
+        RUN_ID, devicePixelRatio: window.devicePixelRatio,
+        avgLineHeight: avgLineHeight.toFixed(2),
+        paddingXpx: remToPx(PADDING_X_REM).toFixed(2),
+        paddingYpx: remToPx(PADDING_Y_REM).toFixed(2),
+        availableTextHeight: availableTextHeight.toFixed(2),
+    });
+
     const newPages: PageContent[] = [];
     let elementIndex = 0;
     let yOffsetForNextPage = 0;
 
     while (elementIndex < sourceElements.length) {
+        const elementIndexStart = elementIndex; // фиксируем старт
         console.group(`%c[Page ${newPages.length + 1}]`, 'color: #00FF00; font-weight: bold;');
         
         const initialYOffset = yOffsetForNextPage;
@@ -164,35 +227,71 @@ export const BookView: React.FC = () => {
 
         if (initialYOffset > 0) {
             console.log(`-> Resuming split element at index ${elementIndex} with offset ${initialYOffset.toFixed(2)}px`);
-            const elementToContinue = sourceElements[elementIndex].cloneNode(true);
-            pageContentContainer.appendChild(elementToContinue);
-            pageElements = [elementToContinue];
-            lastMeasuredHeight = pageContentContainer.getBoundingClientRect().height;
-            advanceBy = 1;
-            yOffsetOnNextPage = 0; // Next page starts fresh
-            console.log(`Added 1 resumed element. Measured height: ${lastMeasuredHeight.toFixed(2)}px`);
-        } else {
-            console.log(`-> Starting fresh page with elementIndex: ${elementIndex}`);
-            let pageElementsCount = 0;
-            for (let i = elementIndex; i < sourceElements.length; i++) {
-                pageContentContainer.appendChild(sourceElements[i].cloneNode(true));
-                lastMeasuredHeight = pageContentContainer.getBoundingClientRect().height;
-                pageElementsCount = (i - elementIndex) + 1;
-                if (lastMeasuredHeight > availableTextHeight) {
+            const resumed = sourceElements[elementIndex].cloneNode(true) as HTMLElement;
+            pageContentContainer.appendChild(resumed);
+            const nodes: HTMLElement[] = [resumed];
+            let h = pageContentContainer.getBoundingClientRect().height;
+
+            // FIX: Consistent overflow handling. Add elements until overflow, then break,
+            // leaving the overflowing element for the split logic to handle.
+            for (let i = elementIndex + 1; i < sourceElements.length; i++) {
+                const next = sourceElements[i].cloneNode(true) as HTMLElement;
+                pageContentContainer.appendChild(next);
+                nodes.push(next);
+                const newH = pageContentContainer.getBoundingClientRect().height;
+                const visibleH = newH - initialYOffset;
+                h = newH;
+                if (visibleH > availableTextHeight + 1) {
                     break;
                 }
             }
-            console.log(`Added ${pageElementsCount} elements. Measured height: ${lastMeasuredHeight.toFixed(2)}px`);
-            pageElements = sourceElements.slice(elementIndex, elementIndex + pageElementsCount);
-            advanceBy = pageElementsCount;
+            pageElements = nodes;
+            lastMeasuredHeight = h;
+            advanceBy = nodes.length;
+            yOffsetOnNextPage = 0;
+            console.log(`Added ${nodes.length} resumed+following element(s). Measured height: ${lastMeasuredHeight.toFixed(2)}px`);
+        } else {
+            console.log(`-> Starting fresh page with elementIndex: ${elementIndex}`);
+            const clonedForThisPage: HTMLElement[] = [];
+            for (let i = elementIndex; i < sourceElements.length; i++) {
+                const clone = sourceElements[i].cloneNode(true) as HTMLElement;
+                pageContentContainer.appendChild(clone);
+                clonedForThisPage.push(clone);
+                lastMeasuredHeight = pageContentContainer.getBoundingClientRect().height;
+                if (lastMeasuredHeight > availableTextHeight) break;
+            }
+            pageElements = clonedForThisPage; // ВАЖНО: работаем с КЛОНАМИ в контейнере
+            advanceBy = clonedForThisPage.length;
+            console.log(`Added ${advanceBy} cloned element(s). Measured height: ${lastMeasuredHeight.toFixed(2)}px`);
+            // Диагностика: снимок детей контейнера с топами/высотами
+            console.table(Array.from(pageContentContainer.children).map((el, idx) => {
+              const r = (el as HTMLElement).getBoundingClientRect();
+              return { idx, tag: (el as HTMLElement).tagName, top: r.top.toFixed(2), h: r.height.toFixed(2) };
+            }));
+        }
+
+        const elementLabels = (pageElements as HTMLElement[]).map(el => elLabel(el as HTMLElement));
+        if (DEBUG_STRICT) {
+          console.table(elementLabels.map((label, i) => ({
+            idx: elementIndexStart + i,
+            element: label
+          })));
         }
         
         let finalPageHTML = pageElements.map(e => (e as HTMLElement).outerHTML).join('');
         let finalDebugLines: LineDebugInfo[] = [];
         let finalClipHeight: number | undefined = undefined;
-        let displayedContentHeight = lastMeasuredHeight - initialYOffset;
         
-        const isSplit = (lastMeasuredHeight - initialYOffset) > availableTextHeight + 1;
+        const displayedContentHeight = lastMeasuredHeight - initialYOffset;
+        const isSplit = displayedContentHeight > availableTextHeight + 1;
+        
+        const overshootPx = Math.max(0, displayedContentHeight - availableTextHeight); // перелезли?
+        const underfillPxPrelim = Math.max(0, availableTextHeight - displayedContentHeight); // недобрали? (до клипа)
+        if (DEBUG_STRICT) {
+          console.log(`[Space Budget] displayed=${fmtPx(displayedContentHeight)} available=${fmtPx(availableTextHeight)} ` +
+                      `overshoot=${fmtPx(overshootPx)} underfill(pre)=${fmtPx(underfillPxPrelim)}`);
+        }
+        
         console.log(`Page isSplit: ${isSplit}`);
 
         if (isSplit) {
@@ -217,18 +316,32 @@ export const BookView: React.FC = () => {
                 const lastGoodLine = goodLines[goodLines.length - 1];
                 finalClipHeight = lastGoodLine.top + lastGoodLine.height;
                 finalDebugLines = goodLines;
-                yOffsetOnNextPage = initialYOffset + finalClipHeight;
                 console.log(`Calculated clipHeight: ${finalClipHeight.toFixed(2)}px`);
-                
-                const lastElementOnPage = pageElements[pageElements.length - 1] as HTMLElement;
-                const canSplitLastElement = lastElementOnPage && !lastElementOnPage.tagName.startsWith('H');
-                console.log(`Last element (${lastElementOnPage?.tagName}) can be split: ${canSplitLastElement}`);
-                
+
+                // ВАЖНО: берем ИМЕННО КЛОН, реально лежащий в контейнере
+                const lastClone = pageElements[pageElements.length - 1] as HTMLElement;
+                const canSplitLastElement = lastClone && !lastClone.tagName.startsWith('H');
+                console.log(`Last element (${lastClone?.tagName}) can be split: ${canSplitLastElement} | isConnected=${!!lastClone?.isConnected}`);
+
                 if(canSplitLastElement){
                     advanceBy -= 1;
+                    // Смещение — в координатах ПОСЛЕДНЕГО КЛОНА относительно контейнера
+                    const pageRect = pageContentContainer.getBoundingClientRect();
+                    const lastElTopInPage = (lastClone.getBoundingClientRect().top - pageRect.top) - initialYOffset;
+                    const consumedInsideLastEl = (finalClipHeight ?? 0) - lastElTopInPage;
+                    yOffsetOnNextPage = Math.max(0, consumedInsideLastEl);
+                    console.log(`[Split->Carry] top(lastClone)=${lastElTopInPage.toFixed(2)}px, `
+                      + `clip=${(finalClipHeight ?? 0).toFixed(2)}px, `
+                      + `consumed=${consumedInsideLastEl.toFixed(2)}px, `
+                      + `nextOffset=${yOffsetOnNextPage.toFixed(2)}px`);
+                    // Доп: сверяем против полной высоты этого клон-элемента
+                    const lastElH = lastClone.getBoundingClientRect().height;
+                    console.log(`[Split->Carry Check] lastClone.height=${lastElH.toFixed(2)}px, `
+                      + `leftover=${Math.max(0, lastElH - yOffsetOnNextPage).toFixed(2)}px`);
                     console.log(`-> Will split last element. New advanceBy: ${advanceBy}`);
                 } else {
                     finalPageHTML = (pageElements.slice(0, -1) as HTMLElement[]).map(e => e.outerHTML).join('');
+                    const lastElementOnPage = pageElements[pageElements.length - 1] as HTMLElement;
                     const remainingGoodLines = goodLines.slice(0, goodLines.findIndex(l => l.top >= (lastElementOnPage as any).offsetTop - initialYOffset));
                     if (remainingGoodLines.length > 0) {
                         const newLastGoodLine = remainingGoodLines[remainingGoodLines.length - 1];
@@ -281,17 +394,14 @@ export const BookView: React.FC = () => {
         }
 
         if(finalPageHTML.trim() !== '' || newPages.length === 0) {
-            const viewerHeightForStats = finalClipHeight !== undefined ? finalClipHeight : displayedContentHeight;
-            
+            const viewerHeightForStats =
+                finalClipHeight !== undefined ? finalClipHeight : displayedContentHeight;
+
             let totalLinesForStats = Math.max(0, Math.floor(viewerHeightForStats / avgLineHeight));
-            
-            console.log(`-> Calculating Total Lines: floor(${viewerHeightForStats.toFixed(2)} / ${avgLineHeight.toFixed(2)}) = ${totalLinesForStats}`);
-            
-            // FIX: The average calculation can be wrong. If we measured more good lines than the total, adjust the total.
-            if (goodLinesCount > totalLinesForStats) {
-                console.warn(`-> Adjusting totalLines (${totalLinesForStats}) to match goodLines (${goodLinesCount}) because average calculation was inaccurate.`);
-                totalLinesForStats = goodLinesCount;
-            }
+            if (goodLinesCount > totalLinesForStats) totalLinesForStats = goodLinesCount;
+
+            const lastEl = (pageElements[pageElements.length - 1] as HTMLElement | undefined) || null;
+            const canSplitLastEl = lastEl ? !lastEl.tagName.startsWith('H') : false;
 
             const statsForPage: PageStatsInfo = {
                 totalLines: totalLinesForStats,
@@ -299,15 +409,38 @@ export const BookView: React.FC = () => {
                 emptyLines: Math.max(0, totalLinesForStats - goodLinesCount),
                 viewerHeight: viewerHeightForStats,
                 contentHeight: lastMeasuredHeight,
+
+                // новые поля
+                availableHeight: availableTextHeight,
+                overshootPx,
+                underfillPx: Math.max(0, availableTextHeight - viewerHeightForStats),
+                pageNo: newPages.length + 1,
+                handoffNextOffset: yOffsetOnNextPage,
+                elementIndexStart,
+                elementIndexEnd: elementIndexStart + advanceBy - 1,
+                lastElement: lastEl ? elLabel(lastEl) : null,
+                splitLast: !!(isSplit && canSplitLastEl),
             };
 
-            console.log('-> Preparing stats for push:', {
-                isSplit,
-                finalClipHeight,
-                displayedContentHeight,
-                totalContentHeightForPage: lastMeasuredHeight,
-                calculatedStats: statsForPage
-            });
+            if (DEBUG_STRICT) {
+                const invariantErrors: string[] = [];
+                if (statsForPage.viewerHeight >= statsForPage.contentHeight - EPS) {
+                    invariantErrors.push(`viewer(${fmtPx(statsForPage.viewerHeight)}) >= content(${fmtPx(statsForPage.contentHeight)})`);
+                }
+                if (statsForPage.viewerHeight > statsForPage.availableHeight + EPS) {
+                    invariantErrors.push(`viewer(${fmtPx(statsForPage.viewerHeight)}) > available(${fmtPx(statsForPage.availableHeight)})`);
+                }
+                if (isSplit && statsForPage.underfillPx > 2) {
+                    console.warn(`[Underfill] run#${RUN_ID} page ${statsForPage.pageNo} left ${fmtPx(statsForPage.underfillPx)} unused height on a split page.`);
+                }
+                if (invariantErrors.length) {
+                    console.error(`[Invariant FAIL] run#${RUN_ID} page ${statsForPage.pageNo}: ${invariantErrors.join(' | ')}`, {
+                    stats: statsForPage, initialYOffset
+                    });
+                } else {
+                    console.log(`[Invariant OK] run#${RUN_ID} page ${statsForPage.pageNo}: viewer<content & viewer<=available`);
+                }
+            }
              
              const pageToPush: PageContent = {
                 html: finalPageHTML,
@@ -331,6 +464,31 @@ export const BookView: React.FC = () => {
 
     console.log(`%c[Layout End] Created ${newPages.length} pages.`, 'color: #00FFFF; font-weight: bold;');
     setPages(newPages);
+
+    if (DEBUG_STRICT && newPages.length > 1) {
+        console.groupCollapsed(`[Handoff Check] run#${RUN_ID}`);
+        for (let i = 1; i < newPages.length; i++) {
+          const prev = newPages[i - 1];
+          const curr = newPages[i];
+          const okOffset = Math.abs(curr.initialYOffset - prev.stats.handoffNextOffset) <= EPS;
+          const expectedStartIdx = prev.stats.splitLast ? prev.stats.elementIndexEnd : prev.stats.elementIndexEnd + 1;
+          const okStartIdx = curr.stats.elementIndexStart === expectedStartIdx;
+      
+          if (!okOffset || !okStartIdx) {
+            console.warn(`Page ${i}→${i+1} handoff mismatch`, {
+              prevPage: i, nextPage: i + 1,
+              prevNextOffset: prev.stats.handoffNextOffset,
+              currInitialOffset: curr.initialYOffset,
+              expectedStartIdx, actualStartIdx: curr.stats.elementIndexStart,
+              prevSplitLast: prev.stats.splitLast
+            });
+          } else {
+            console.log(`Page ${i}→${i+1} handoff OK (offset=${fmtPx(curr.initialYOffset)}; startIdx=${curr.stats.elementIndexStart})`);
+          }
+        }
+        console.groupEnd();
+      }
+
     if (currentPage >= newPages.length) {
       setCurrentPage(Math.max(0, newPages.length > 0 ? newPages.length - (newPages.length % 4 || 4) : 0));
     }
