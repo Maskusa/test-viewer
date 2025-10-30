@@ -51,11 +51,13 @@ const Page: React.FC<{
   content: PageContent;
   showDebugView: boolean;
   fontSize: number;
-}> = React.memo(({ content, showDebugView, fontSize }) => {
+  pageIndex: number;
+}> = React.memo(({ content, showDebugView, fontSize, pageIndex }) => {
   return (
-    <div className="relative w-full h-full" style={{ height: content.clipHeight ? `${content.clipHeight}px` : '100%', overflow: 'hidden' }}>
+    <div id={`viewer_h-${pageIndex}`} className="relative w-full h-full" style={{ height: content.clipHeight ? `${content.clipHeight}px` : '100%', overflow: 'hidden' }}>
         <div style={{ transform: `translateY(-${content.initialYOffset}px)` }}>
             <div
+                id={`content_h-${pageIndex}`}
                 className="prose prose-invert max-w-none prose-p:text-gray-300 prose-h1:text-cyan-400 prose-h2:text-cyan-300 prose-h3:text-cyan-200 prose-h4:text-gray-200"
                 style={{ fontSize: `${fontSize}px` }}
                 dangerouslySetInnerHTML={{ __html: content.html }}
@@ -141,18 +143,18 @@ export const BookView: React.FC = () => {
             }
         }
         
-        const fullContentHeightForStats = lastMeasuredHeight;
         const pageElements = sourceElements.slice(elementIndex, elementIndex + pageElementsCount);
         let pageHTML = pageElements.map(e => e.outerHTML).join('');
 
         let finalPageHTML = pageHTML;
         let finalDebugLines: LineDebugInfo[] = [];
         let finalClipHeight: number | undefined = undefined;
-        let displayedContentHeight = fullContentHeightForStats - initialYOffset;
+        let displayedContentHeight = lastMeasuredHeight - initialYOffset;
+        const totalContentHeightForPage = displayedContentHeight;
         let yOffsetOnNextPage = 0;
         let advanceBy = pageElementsCount;
         
-        const isSplit = (fullContentHeightForStats - initialYOffset) > availableTextHeight + 1;
+        const isSplit = (lastMeasuredHeight - initialYOffset) > availableTextHeight + 1;
 
         if (isSplit) {
             const pageContainerRect = pageContentContainer.getBoundingClientRect();
@@ -226,7 +228,7 @@ export const BookView: React.FC = () => {
                     goodLines: goodLinesCount, badLines: 0, // Bad lines are no longer rendered
                     emptyLines: Math.max(0, totalLinesCount - goodLinesCount),
                     viewerHeight: availableTextHeight,
-                    contentHeight: fullContentHeightForStats,
+                    contentHeight: totalContentHeightForPage,
                 }
             });
         }
@@ -245,25 +247,25 @@ export const BookView: React.FC = () => {
 
     setPages(newPages);
     if (currentPage >= newPages.length) {
-      setCurrentPage(Math.max(0, newPages.length > 0 ? newPages.length - (newPages.length % 3 || 3) : 0));
+      setCurrentPage(Math.max(0, newPages.length > 0 ? newPages.length - (newPages.length % 4 || 4) : 0));
     }
   }, [blockWidth, blockHeight, fontSize, sourceElements, currentPage]); // Added currentPage to deps to re-evaluate if needed
 
   const handleTurnPage = (direction: 'next' | 'prev') => {
-    setCurrentPage(p => direction === 'next' ? Math.min(p + 3, pages.length - (pages.length % 3 || 3)) : Math.max(0, p - 3));
+    setCurrentPage(p => direction === 'next' ? Math.min(p + 4, pages.length - (pages.length % 4 || 4)) : Math.max(0, p - 4));
   };
   
-  const totalSpreads = Math.ceil(pages.length / 3);
-  const currentSpread = Math.floor(currentPage / 3) + 1;
+  const totalSpreads = Math.ceil(pages.length / 4);
+  const currentSpread = Math.floor(currentPage / 4) + 1;
 
   const renderPage = (pageIndex: number) => {
     const pageContent = pages[pageIndex];
     return (
         <div className="flex flex-col gap-4" style={{ width: blockWidth }}>
              {showDebugView && pageContent ? <PageStats stats={pageContent.stats} /> : <div className="h-[70px]" />}
-            <div className="w-full bg-gray-800 shadow-lg rounded-lg border border-gray-700 overflow-hidden" style={{height: blockHeight}}>
-              <div className="relative w-full h-full" style={{padding: `${remToPx(PADDING_Y_REM)}px ${remToPx(PADDING_X_REM)}px`}}>
-                {pageContent ? <Page content={pageContent} showDebugView={showDebugView} fontSize={fontSize} /> : (
+            <div className="page w-full bg-gray-800 shadow-lg rounded-lg border border-gray-700 overflow-hidden" style={{height: blockHeight}}>
+              <div className="page_viewer relative w-full h-full" style={{padding: `${remToPx(PADDING_Y_REM)}px ${remToPx(PADDING_X_REM)}px`}}>
+                {pageContent ? <Page content={pageContent} showDebugView={showDebugView} fontSize={fontSize} pageIndex={pageIndex} /> : (
                      <div className="w-full h-full flex items-center justify-center">
                         <svg className="w-24 h-24 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.546-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                      </div>
@@ -283,15 +285,15 @@ export const BookView: React.FC = () => {
         />
       </aside>
       <div className="flex-grow flex flex-col items-center justify-center relative">
-        <div className="relative transition-all duration-200 flex justify-center items-start gap-8" style={{ width: `${blockWidth * 3 + 64}px` }}>
-          {renderPage(currentPage)} {renderPage(currentPage + 1)} {renderPage(currentPage + 2)}
+        <div className="relative transition-all duration-200 flex justify-center items-start gap-8" style={{ width: `${blockWidth * 4 + 96}px` }}>
+          {renderPage(currentPage)} {renderPage(currentPage + 1)} {renderPage(currentPage + 2)} {renderPage(currentPage + 3)}
         </div>
         <div className="flex items-center justify-center mt-6 w-full max-w-md">
           <button onClick={() => handleTurnPage('prev')} disabled={currentPage === 0} className="p-2 rounded-full text-gray-400 hover:bg-gray-700 hover:text-white disabled:text-gray-600 disabled:bg-transparent transition-colors">
             <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
           </button>
           <span className="font-mono text-center text-sm text-gray-500 w-28">Spread {currentSpread} / {totalSpreads}</span>
-          <button onClick={() => handleTurnPage('next')} disabled={currentPage + 3 >= pages.length} className="p-2 rounded-full text-gray-400 hover:bg-gray-700 hover:text-white disabled:text-gray-600 disabled:bg-transparent transition-colors">
+          <button onClick={() => handleTurnPage('next')} disabled={currentPage + 4 >= pages.length} className="p-2 rounded-full text-gray-400 hover:bg-gray-700 hover:text-white disabled:text-gray-600 disabled:bg-transparent transition-colors">
             <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
           </button>
         </div>
