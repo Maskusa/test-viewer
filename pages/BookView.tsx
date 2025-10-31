@@ -54,6 +54,8 @@ interface PageStatsInfo {
   lastElement: string | null; // человекочитаемая метка последнего узла
   splitLast: boolean;       // резали ли последний узел на этой странице
   initialYOffset: number;
+  globalStart: number;
+  globalEnd: number;
 }
 
 
@@ -72,12 +74,38 @@ const PageStats: React.FC<{ stats: PageStatsInfo, pageIndex: number }> = ({ stat
             <div className="flex justify-between text-green-400"><span>Good:</span><span>{stats.goodLines}</span></div>
             <div className="flex justify-between text-red-400"><span>Bad:</span><span>{stats.badLines}</span></div>
             <div className="flex justify-between text-gray-400"><span>Empty:</span><span>{stats.emptyLines}</span></div>
+            
             <div className="col-span-2 border-t border-gray-700 pt-1 mt-1"></div>
+            
             <div className="flex justify-between"><span>Viewer H:</span><span>{stats.viewerHeight.toFixed(0)}px</span></div>
-            <div className="flex justify-between"><span>Content H:</span><span id="content_h">{stats.contentHeight.toFixed(0)}px</span></div>
+            <div className="flex justify-between"><span>Content H:</span><span id={`stats_content_h-${pageIndex}`}>{stats.contentHeight.toFixed(0)}px</span></div>
+
+            {/* Renamed local range */}
             <div className="flex justify-between col-span-2">
-                <span>Position (content_h-{pageIndex}):</span>
-                <span>{`${stats.initialYOffset.toFixed(0)} - ${endPosition.toFixed(0)}px`}</span>
+                <span className="truncate mr-2">Slice in #content_h-{pageIndex}:</span>
+                <span className="flex-shrink-0">{`${stats.initialYOffset.toFixed(0)} - ${endPosition.toFixed(0)}px`}</span>
+            </div>
+
+            {/* New global range */}
+            <div className="flex justify-between col-span-2 font-bold text-cyan-300">
+                <span>Global (doc):</span>
+                <span>{`${stats.globalStart.toFixed(0)} - ${stats.globalEnd.toFixed(0)}px`}</span>
+            </div>
+            
+            <div className="col-span-2 border-t border-gray-700 pt-1 mt-1"></div>
+
+            {/* Diagnostic fields */}
+            <div className="flex justify-between text-gray-400">
+                <span className="truncate">handoffNextOffset:</span>
+                <span>{stats.handoffNextOffset.toFixed(0)}px</span>
+            </div>
+            <div className="flex justify-between text-gray-400">
+                <span>splitLast:</span>
+                <span>{String(stats.splitLast)}</span>
+            </div>
+            <div className="flex justify-between col-span-2 text-gray-400">
+                <span className="flex-shrink-0 mr-2">lastElement:</span>
+                <span className="truncate text-right">{stats.lastElement ?? '—'}</span>
             </div>
         </div>
     );
@@ -109,7 +137,7 @@ const Page: React.FC<{
     if (!okViewerVsContent) {
       console.error(note, { pageIndex, dom: { viewer: vh, content: ch }, stats: content.stats });
     } else if (DEBUG_STRICT) {
-      // console.log(note);
+      console.log(note);
     }
   }, [content.html, content.stats, pageIndex]);
 
@@ -209,11 +237,14 @@ export const BookView: React.FC = () => {
     const newPages: PageContent[] = [];
     let elementIndex = 0;
     let yOffsetForNextPage = 0;
+    let globalOffset = 0; 
 
     while (elementIndex < sourceElements.length) {
+        console.group(`%cSetting up Page ${newPages.length + 1}`, 'color: #FFA500; font-weight: bold;');
         const elementIndexStart = elementIndex; // фиксируем старт
         
         const initialYOffset = yOffsetForNextPage;
+        console.log(`[Step 1: Initial State] Starting with yOffset: ${fmtPx(initialYOffset)} from previous page.`);
         pageContentContainer.innerHTML = '';
         
         let pageElements: (Node | HTMLElement)[];
@@ -222,6 +253,7 @@ export const BookView: React.FC = () => {
         let yOffsetOnNextPage = 0;
 
         if (initialYOffset > 0) {
+            console.log(`[Step 2: Content Fill] Resuming page from element index ${elementIndex}.`);
             const resumed = sourceElements[elementIndex].cloneNode(true) as HTMLElement;
             pageContentContainer.appendChild(resumed);
             const nodes: HTMLElement[] = [resumed];
@@ -241,7 +273,9 @@ export const BookView: React.FC = () => {
             pageElements = nodes;
             lastMeasuredHeight = h;
             advanceBy = nodes.length;
+            console.log(`[Step 2: Content Fill] Added ${nodes.length} element(s) (1 resumed + ${nodes.length - 1} following). Final measured height: ${fmtPx(lastMeasuredHeight)}`);
         } else {
+            console.log(`[Step 2: Content Fill] Starting fresh page from element index ${elementIndex}.`);
             const clonedForThisPage: HTMLElement[] = [];
             for (let i = elementIndex; i < sourceElements.length; i++) {
                 const clone = sourceElements[i].cloneNode(true) as HTMLElement;
@@ -252,6 +286,7 @@ export const BookView: React.FC = () => {
             }
             pageElements = clonedForThisPage; // ВАЖНО: работаем с КЛОНАМИ в контейнере
             advanceBy = clonedForThisPage.length;
+            console.log(`[Step 2: Content Fill] Added ${advanceBy} cloned element(s) until overflow. Final measured height: ${fmtPx(lastMeasuredHeight)}`);
         }
         
         let finalPageHTML = pageElements.map(e => (e as HTMLElement).outerHTML).join('');
@@ -261,6 +296,7 @@ export const BookView: React.FC = () => {
         const displayedContentHeight = lastMeasuredHeight - initialYOffset;
         const isSplit = displayedContentHeight > availableTextHeight + 1;
         
+        console.log(`[Step 3: Split Decision] Displayed content height (${fmtPx(displayedContentHeight)}) vs available height (${fmtPx(availableTextHeight)}). Page will be split: ${isSplit}.`);
         const overshootPx = Math.max(0, displayedContentHeight - availableTextHeight);
 
         if (isSplit) {
@@ -296,7 +332,13 @@ export const BookView: React.FC = () => {
                 } else {
                     finalPageHTML = (pageElements.slice(0, -1) as HTMLElement[]).map(e => e.outerHTML).join('');
                     const lastElementOnPage = pageElements[pageElements.length - 1] as HTMLElement;
-                    const remainingGoodLines = goodLines.slice(0, goodLines.findIndex(l => l.top >= (lastElementOnPage as any).offsetTop - initialYOffset));
+                    
+                    const lastElementRect = lastElementOnPage.getBoundingClientRect();
+                    const pageContainerTop = pageContentContainer.getBoundingClientRect().top;
+                    const lastElementTopInContainer = lastElementRect.top - pageContainerTop;
+
+                    const remainingGoodLines = goodLines.filter(l => l.top < lastElementTopInContainer - initialYOffset);
+                    
                     if (remainingGoodLines.length > 0) {
                         const newLastGoodLine = remainingGoodLines[remainingGoodLines.length - 1];
                         finalClipHeight = newLastGoodLine.top + newLastGoodLine.height;
@@ -311,6 +353,7 @@ export const BookView: React.FC = () => {
             } else {
                  yOffsetForNextPage = 0;
                  elementIndex += pageElements.length > 0 ? pageElements.length : 1;
+                 console.groupEnd();
                  continue;
             }
         } else {
@@ -337,6 +380,18 @@ export const BookView: React.FC = () => {
         if(finalPageHTML.trim() !== '' || newPages.length === 0) {
             const viewerHeightForStats =
                 finalClipHeight !== undefined ? finalClipHeight : displayedContentHeight;
+            
+            console.groupCollapsed('[Step 4: Position & Stats Calculation]');
+            console.log(`- Initial Offset: ${fmtPx(initialYOffset)}`);
+            if (isSplit) {
+                console.log(`- Page was split. Using calculated clip height: ${fmtPx(finalClipHeight)}`);
+            } else {
+                console.log(`- Page was not split. Using displayed content height: ${fmtPx(displayedContentHeight)}`);
+            }
+            console.log(`- Final Viewer Height for stats: ${fmtPx(viewerHeightForStats)}`);
+            const endPosition = initialYOffset + viewerHeightForStats;
+            console.log(`%c- Calculated Position: ${initialYOffset.toFixed(0)}px - ${endPosition.toFixed(0)}px`, 'font-weight: bold; color: #90EE90;');
+            console.groupEnd();
 
             let totalLinesForStats = Math.max(0, Math.floor(viewerHeightForStats / avgLineHeight));
             if (goodLinesCount > totalLinesForStats) totalLinesForStats = goodLinesCount;
@@ -360,6 +415,8 @@ export const BookView: React.FC = () => {
                 lastElement: lastEl ? elLabel(lastEl) : null,
                 splitLast: !!(isSplit && canSplitLastEl),
                 initialYOffset: initialYOffset,
+                globalStart: globalOffset,
+                globalEnd: globalOffset + viewerHeightForStats,
             };
              
              const pageToPush: PageContent = {
@@ -369,10 +426,13 @@ export const BookView: React.FC = () => {
                 stats: statsForPage,
             };
             newPages.push(pageToPush);
+            globalOffset += viewerHeightForStats;
         }
         
         yOffsetForNextPage = yOffsetOnNextPage;
         elementIndex += advanceBy;
+        console.log(`[Step 5: Handoff] Preparing for next page. Next yOffset will be ${fmtPx(yOffsetForNextPage)}. Next element index will be ${elementIndex}.`);
+        console.groupEnd();
     }
 
     setPages(newPages);
@@ -407,7 +467,7 @@ export const BookView: React.FC = () => {
   
   const totalPages = pages.length;
   const currentPageDisplay = currentPage + 1;
-  const STATS_HEIGHT = 88; // Adjusted height for the stats component
+  const STATS_HEIGHT = 148; // Adjusted height for the stats component
 
   const renderSinglePage = (pageIndex: number) => {
     const pageContent = pages[pageIndex];
