@@ -7,9 +7,10 @@ interface ControlsProps {
   setHeight: (value: number) => void;
   fontSize: number;
   setFontSize: (value: number) => void;
-  // FIX: Make showDebugView and setShowDebugView optional to allow this component to be used in views without a debug mode.
   showDebugView?: boolean;
   setShowDebugView?: (value: boolean) => void;
+  singlePageView?: boolean;
+  setSinglePageView?: (value: boolean) => void;
 }
 
 const Slider: React.FC<{
@@ -78,6 +79,8 @@ export const Controls: React.FC<ControlsProps> = ({
   setFontSize,
   showDebugView,
   setShowDebugView,
+  singlePageView,
+  setSinglePageView,
 }) => {
   return (
     <div className="bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700 space-y-6 sticky top-24">
@@ -111,14 +114,22 @@ export const Controls: React.FC<ControlsProps> = ({
         unit="px"
         onChange={(e) => setFontSize(Number(e.target.value))}
       />
-      {/* FIX: Conditionally render the debug toggle only if the props are provided. */}
-      {showDebugView !== undefined && setShowDebugView && (
-        <div className="border-t border-gray-700 pt-6">
-          <Toggle
-              label="Show Line Colliders"
-              enabled={showDebugView}
-              onChange={() => setShowDebugView(!showDebugView)}
-          />
+      {(showDebugView !== undefined || singlePageView !== undefined) && (
+         <div className="border-t border-gray-700 pt-6 space-y-4">
+            {showDebugView !== undefined && setShowDebugView && (
+                <Toggle
+                    label="Show Line Colliders"
+                    enabled={showDebugView}
+                    onChange={() => setShowDebugView(!showDebugView)}
+                />
+            )}
+            {singlePageView !== undefined && setSinglePageView && (
+                <Toggle
+                    label="Single Page View"
+                    enabled={singlePageView}
+                    onChange={() => setSinglePageView(!singlePageView)}
+                />
+            )}
         </div>
       )}
     </div>
